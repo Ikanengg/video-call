@@ -1,0 +1,15 @@
+.camera-container {
+  text-align: center;
+  margin-top: 20px;
+}
+
+.camera-preview {
+  width: 400px;
+  height: 300px;
+  border: 2px solid black;
+  border-radius: 8px;
+}
+
+.camera-controls {
+  margin-top: 10px;
+}
