@@ -33,10 +33,8 @@ const CameraComponent = () => {
       if (!event.candidate || !callId) return;
       console.log("New ICE candidate:", event.candidate);
 
-      // Determine which ICE array to update depending on caller/callee role
       const iceKey = isCaller ? "caller_ice" : "callee_ice";
 
-      // Fetch current ICE candidates to append to
       const { data, error } = await supabase
         .from("calls")
         .select(iceKey)
@@ -48,10 +46,8 @@ const CameraComponent = () => {
         return;
       }
 
-      // Append new candidate
       const updatedIce = data[iceKey] ? [...data[iceKey], event.candidate] : [event.candidate];
 
-      // Update Supabase
       const { error: updateError } = await supabase
         .from("calls")
         .update({ [iceKey]: updatedIce })
@@ -63,7 +59,6 @@ const CameraComponent = () => {
     };
 
     return () => {
-      // Cleanup peer connection on unmount
       if (pc.current) {
         pc.current.close();
         pc.current = null;
@@ -88,7 +83,6 @@ const CameraComponent = () => {
         async (payload) => {
           const callData = payload.new;
 
-          // If answer arrives and remoteDescription not set (caller side)
           if (callData.answer && isCaller && !pc.current.remoteDescription) {
             console.log("Received answer SDP from callee:", callData.answer);
             await pc.current.setRemoteDescription(new RTCSessionDescription({
@@ -98,7 +92,6 @@ const CameraComponent = () => {
             console.log("Answer SDP set");
           }
 
-          // Add ICE candidates from remote peer
           const remoteIceKey = isCaller ? "callee_ice" : "caller_ice";
 
           for (const candidate of callData[remoteIceKey] || []) {
@@ -118,7 +111,6 @@ const CameraComponent = () => {
     };
   }, [callId, isCaller]);
 
-  // Start camera and add stream tracks to peer connection
   const startCamera = async () => {
     try {
       const mediaStream = await navigator.mediaDevices.getUserMedia({
@@ -136,14 +128,13 @@ const CameraComponent = () => {
       }
       setIsCameraOn(true);
       setStream(mediaStream);
-      
+
     } catch (error) {
       console.error("Error accessing camera:", error);
       alert("Unable to access camera. Please check permissions.");
     }
   };
 
-  // Stop camera and stop all tracks
   const stopCamera = () => {
     if (stream) {
       stream.getTracks().forEach((track) => track.stop());
@@ -152,9 +143,8 @@ const CameraComponent = () => {
     }
   };
 
-  // Create call and offer (caller)
   const createCall = async () => {
-    setIsCaller(true); // This device is the caller
+    setIsCaller(true);
 
     const offer = await pc.current.createOffer();
     console.log("Creating offer SDP:", offer);
@@ -178,14 +168,13 @@ const CameraComponent = () => {
     console.log("Call created with ID:", data.id);
   };
 
-  // Join existing call (callee)
   const joinCall = async () => {
     if (!joinCallId) {
       alert("Please enter a call ID");
       return;
     }
 
-    setIsCaller(false); // This device is the callee
+    setIsCaller(false);
 
     const { data: callData, error } = await supabase
       .from("calls")
@@ -242,7 +231,9 @@ const CameraComponent = () => {
         ) : (
           <>
             <button onClick={stopCamera}>Turn Camera Off</button>
-            {!callId && <button onClick={createCall}>Create Call</button>}
+            {!callId && (
+              <button onClick={createCall}>Create Call</button>
+            )}
           </>
         )}
       </div>
@@ -254,11 +245,20 @@ const CameraComponent = () => {
             placeholder="Enter call ID"
             value={joinCallId}
             onChange={(e) => setJoinCallId(e.target.value)}
+            disabled={!isCameraOn}
           />
-          <button onClick={joinCall}>Join Call</button>
+          <button
+            onClick={joinCall}
+            disabled={!isCameraOn || joinCallId.trim() === ""}
+          >
+            Join Call
+          </button>
+          {!isCameraOn && (
+            <p style={{ color: 'red' }}>Turn on your camera first</p>
+          )}
         </div>
       )}
-      {/* Display current call ID*/}
+
       {callId && (
         <div className="call-id-display">
           <p><strong>Call ID:</strong> {callId}</p>
