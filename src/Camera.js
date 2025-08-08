@@ -23,6 +23,7 @@ const CameraComponent = () => {
     pc.current = new RTCPeerConnection(configuration);
 
     pc.current.ontrack = (event) => {
+      console.log("Remote track received:", event);
       if (remoteVideoRef.current) {
         remoteVideoRef.current.srcObject = event.streams[0];
       }
@@ -30,6 +31,7 @@ const CameraComponent = () => {
 
     pc.current.onicecandidate = async (event) => {
       if (!event.candidate || !callId) return;
+      console.log("New ICE candidate:", event.candidate);
 
       // Determine which ICE array to update depending on caller/callee role
       const iceKey = isCaller ? "caller_ice" : "callee_ice";
@@ -88,6 +90,7 @@ const CameraComponent = () => {
 
           // If answer arrives and remoteDescription not set (caller side)
           if (callData.answer && isCaller && !pc.current.remoteDescription) {
+            console.log("Received answer SDP from callee:", callData.answer);
             await pc.current.setRemoteDescription(new RTCSessionDescription({
               type: "answer",
               sdp: callData.answer,
@@ -125,6 +128,7 @@ const CameraComponent = () => {
 
       mediaStream.getTracks().forEach((track) => {
         pc.current.addTrack(track, mediaStream);
+        console.log("Added local track:", track.kind);
       });
 
       if (videoRef.current) {
@@ -153,7 +157,9 @@ const CameraComponent = () => {
     setIsCaller(true); // This device is the caller
 
     const offer = await pc.current.createOffer();
+    console.log("Creating offer SDP:", offer);
     await pc.current.setLocalDescription(offer);
+    console.log("Local description set with offer SDP");
 
     const { data, error } = await supabase
       .from("calls")
