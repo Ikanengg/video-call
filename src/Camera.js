@@ -130,9 +130,9 @@ const CameraComponent = () => {
       if (videoRef.current) {
         videoRef.current.srcObject = mediaStream;
       }
-
-      setStream(mediaStream);
       setIsCameraOn(true);
+      setStream(mediaStream);
+      
     } catch (error) {
       console.error("Error accessing camera:", error);
       alert("Unable to access camera. Please check permissions.");
@@ -183,7 +183,7 @@ const CameraComponent = () => {
 
     const { data: callData, error } = await supabase
       .from("calls")
-      .select("*")
+      .select("id, offer, caller_ice, callee_ice")
       .eq("id", joinCallId)
       .single();
 
