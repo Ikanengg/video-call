@@ -111,6 +111,7 @@ const CameraComponent = () => {
     };
   }, [callId, isCaller]);
 
+  // Start camera and add stream tracks to peer connection
   const startCamera = async () => {
     try {
       const mediaStream = await navigator.mediaDevices.getUserMedia({
@@ -135,6 +136,7 @@ const CameraComponent = () => {
     }
   };
 
+  // Stop camera and stop all tracks
   const stopCamera = () => {
     if (stream) {
       stream.getTracks().forEach((track) => track.stop());
@@ -143,8 +145,9 @@ const CameraComponent = () => {
     }
   };
 
+  // Create call and offer (caller)
   const createCall = async () => {
-    setIsCaller(true);
+    setIsCaller(true); // This device is the caller
 
     const offer = await pc.current.createOffer();
     console.log("Creating offer SDP:", offer);
@@ -168,11 +171,14 @@ const CameraComponent = () => {
     console.log("Call created with ID:", data.id);
   };
 
+  // Join existing call (callee)
   const joinCall = async () => {
+    console.log("Join call started");
     if (!joinCallId) {
       alert("Please enter a call ID");
       return;
     }
+    console.log("Call ID to join:", joinCallId);
 
     setIsCaller(false);
 
@@ -184,18 +190,24 @@ const CameraComponent = () => {
 
     if (error || !callData) {
       alert("Call ID not found!");
+      console.error("Error fetching call data:", error);
       return;
     }
 
+    console.log("Fetched call data:", callData);
     setCallId(joinCallId);
 
     await pc.current.setRemoteDescription(new RTCSessionDescription({
       type: "offer",
       sdp: callData.offer,
     }));
+    console.log("Set remote description with offer");
 
     const answer = await pc.current.createAnswer();
+    console.log("Created answer SDP:", answer);
+
     await pc.current.setLocalDescription(answer);
+    console.log("Set local description with answer");
 
     const { error: updateError } = await supabase
       .from("calls")
@@ -204,6 +216,8 @@ const CameraComponent = () => {
 
     if (updateError) {
       console.error("Error saving answer SDP:", updateError);
+    } else {
+      console.log("Answer SDP saved to database");
     }
   };
 
@@ -231,9 +245,7 @@ const CameraComponent = () => {
         ) : (
           <>
             <button onClick={stopCamera}>Turn Camera Off</button>
-            {!callId && (
-              <button onClick={createCall}>Create Call</button>
-            )}
+            {!callId && <button onClick={createCall}>Create Call</button>}
           </>
         )}
       </div>
@@ -245,20 +257,11 @@ const CameraComponent = () => {
             placeholder="Enter call ID"
             value={joinCallId}
             onChange={(e) => setJoinCallId(e.target.value)}
-            disabled={!isCameraOn}
           />
-          <button
-            onClick={joinCall}
-            disabled={!isCameraOn || joinCallId.trim() === ""}
-          >
-            Join Call
-          </button>
-          {!isCameraOn && (
-            <p style={{ color: 'red' }}>Turn on your camera first</p>
-          )}
+          <button onClick={joinCall}>Join Call</button>
         </div>
       )}
-
+      {/* Display current call ID*/}
       {callId && (
         <div className="call-id-display">
           <p><strong>Call ID:</strong> {callId}</p>
