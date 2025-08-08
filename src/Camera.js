@@ -183,7 +183,7 @@ const CameraComponent = () => {
 
     const { data: callData, error } = await supabase
       .from("calls")
-      .select()
+      .select("*")
       .eq("id", joinCallId)
       .single();
 
