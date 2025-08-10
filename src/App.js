@@ -1,7 +1,7 @@
-import VideoCall from "./Camera";
+import VideoCallComponent from "./Cam";
 
 function App() {
-  return <VideoCall />;
+  return <VideoCallComponent />;
 }
 
 export default App;
