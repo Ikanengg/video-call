@@ -3,65 +3,49 @@ import "./Camera.css";
 import { supabase } from "./supabaseClient";
 
 const CameraComponent = () => {
-  const videoRef = useRef(null);              // Local video element
-  const remoteVideoRef = useRef(null);        // Remote video element
-  const pc = useRef(null);                    // RTCPeerConnection
-  const roleRef = useRef("caller");           // "caller" | "callee" (kept in a ref so PC effect doesn't rerun)
-  const addedRemoteCandidates = useRef(new Set()); // Dedup remote ICE
-  const pendingLocalCandidates = useRef([]);  // Buffer local ICE until callId exists
+  const videoRef = useRef(null);           // Local video element
+  const remoteVideoRef = useRef(null);     // Remote video element
+  const pc = useRef(null);                 // RTCPeerConnection
 
-  const [callId, setCallId] = useState(null);      // Active call id
-  const [joinCallId, setJoinCallId] = useState(""); // Input for callee to join
+  const pendingLocalCandidates = useRef([]); // Buffer ICE until callId exists
+  const addedRemoteCandidates = useRef(new Set()); // Deduplicate remote ICE
+
+  const roleRef = useRef(null); // "caller" or "callee"
+
+  const [callId, setCallId] = useState(null);
+  const [joinCallId, setJoinCallId] = useState("");
   const [isCameraOn, setIsCameraOn] = useState(false);
   const [stream, setStream] = useState(null);
 
-  // ---- STUN + TURN (public TURN just for testing; swap for your paid TURN in prod) ----
   const configuration = {
     iceServers: [
       { urls: "stun:stun.l.google.com:19302" },
       {
         urls: "turn:openrelay.metered.ca:80",
         username: "openrelayproject",
-        credential: "openrelayproject",
-      },
-      {
-        urls: "turn:openrelay.metered.ca:443",
-        username: "openrelayproject",
-        credential: "openrelayproject",
-      },
-      {
-        urls: "turn:openrelay.metered.ca:443?transport=tcp",
-        username: "openrelayproject",
-        credential: "openrelayproject",
-      },
-    ],
+        credential: "openrelayproject"
+      }
+    ]
   };
 
-  // ---------- PeerConnection: create ONCE ----------
+  // ---------- RTCPeerConnection ----------
   useEffect(() => {
     console.log("[PC] Creating RTCPeerConnection");
     pc.current = new RTCPeerConnection(configuration);
 
     pc.current.ontrack = (event) => {
-      console.log("[PC] Remote track:", event.track?.kind, event.streams);
+      console.log("[PC] Remote track:", event.track.kind, event.streams);
       if (remoteVideoRef.current && event.streams && event.streams[0]) {
         remoteVideoRef.current.srcObject = event.streams[0];
       }
     };
 
-    pc.current.onconnectionstatechange = () => {
-      console.log("[PC] connectionState:", pc.current.connectionState);
-    };
-    pc.current.onicegatheringstatechange = () => {
-      console.log("[PC] iceGatheringState:", pc.current.iceGatheringState);
-    };
-
-    // Buffer or store ICE candidates
     pc.current.onicecandidate = async (event) => {
       if (!event.candidate) {
         console.log("[ICE] Gathering complete (null candidate)");
         return;
       }
+
       const cand = event.candidate.toJSON();
 
       if (!callId) {
@@ -69,250 +53,141 @@ const CameraComponent = () => {
         pendingLocalCandidates.current.push(cand);
         return;
       }
-      await saveCandidate(cand);
+
+      const iceKey = roleRef.current === "caller" ? "caller_ice" : "callee_ice";
+      const { data } = await supabase.from("calls").select(iceKey).eq("id", callId).single();
+      const current = Array.isArray(data?.[iceKey]) ? data[iceKey] : [];
+      await supabase.from("calls").update({ [iceKey]: [...current, cand] }).eq("id", callId);
+      console.log(`[ICE] Stored ${iceKey} candidate. Total now: ${current.length + 1}`);
     };
 
     return () => {
       console.log("[PC] Closing RTCPeerConnection");
-      pc.current?.close();
-      pc.current = null;
+      if (pc.current) pc.current.close();
     };
-    // Empty deps → only once
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // When callId becomes available, flush any buffered local ICE
-  useEffect(() => {
-    const flush = async () => {
-      if (!callId || pendingLocalCandidates.current.length === 0) return;
-      console.log(
-        `[ICE] Flushing ${pendingLocalCandidates.current.length} buffered candidates`
-      );
-      const toFlush = [...pendingLocalCandidates.current];
-      pendingLocalCandidates.current = [];
-      for (const cand of toFlush) {
-        await saveCandidate(cand);
-      }
-    };
-    flush();
-  }, [callId]);
-
-  // Helper to persist a local ICE candidate to the right column
-  const saveCandidate = async (candJSON) => {
-    const isCaller = roleRef.current === "caller";
-    const iceKey = isCaller ? "caller_ice" : "callee_ice";
-
-    const { data, error } = await supabase
-      .from("calls")
-      .select(iceKey)
-      .eq("id", callId)
-      .single();
-
-    if (error) {
-      console.error("[ICE] Fetch current ICE failed:", error);
-      return;
-    }
-
-    const current = Array.isArray(data?.[iceKey]) ? data[iceKey] : [];
-    const updated = [...current, candJSON];
-
-    const { error: updateError } = await supabase
-      .from("calls")
-      .update({ [iceKey]: updated })
-      .eq("id", callId);
-
-    if (updateError) {
-      console.error("[ICE] Update ICE failed:", updateError);
-    } else {
-      console.log(`[ICE] Stored ${iceKey} candidate (total ${updated.length})`);
-    }
-  };
-
-  // ---------- Supabase realtime: listen for row updates and apply changes ----------
+  // ---------- Supabase realtime subscription ----------
   useEffect(() => {
     if (!callId) return;
 
-    console.log("[RT] Subscribing to updates for calls table");
+    console.log("[RT] Subscribing to updates for call:", callId);
     const channel = supabase
       .channel("public:calls")
       .on(
         "postgres_changes",
-        { event: "UPDATE", schema: "public", table: "calls" },
+        { event: "UPDATE", schema: "public", table: "calls", filter: `id=eq.${callId}` },
         async (payload) => {
           const callData = payload.new;
-          if (!callData || callData.id !== callId) return; // only our call
-
-          const isCaller = roleRef.current === "caller";
 
           // Caller receives Answer
-          if (isCaller && callData.answer && !pc.current?.remoteDescription) {
-            console.log("[RT] Answer received; applying remote description");
-            try {
-              await pc.current.setRemoteDescription(
-                new RTCSessionDescription({ type: "answer", sdp: callData.answer })
-              );
-              console.log("[RT] Remote description set (answer)");
-            } catch (e) {
-              console.error("[RT] setRemoteDescription(answer) failed:", e);
-            }
+          if (roleRef.current === "caller" && callData.answer && !pc.current.remoteDescription) {
+            console.log("[RT] Setting remote description (answer)");
+            await pc.current.setRemoteDescription({ type: "answer", sdp: callData.answer });
           }
 
           // Add remote ICE candidates
-          const remoteIceKey = isCaller ? "callee_ice" : "caller_ice";
+          const remoteIceKey = roleRef.current === "caller" ? "callee_ice" : "caller_ice";
           const list = Array.isArray(callData[remoteIceKey]) ? callData[remoteIceKey] : [];
 
           for (const cand of list) {
             const key = JSON.stringify(cand);
             if (addedRemoteCandidates.current.has(key)) continue;
             try {
-              await pc.current.addIceCandidate(cand); // cand is RTCIceCandidateInit
+              await pc.current.addIceCandidate(cand);
               addedRemoteCandidates.current.add(key);
               console.log("[RT] Added remote ICE candidate");
             } catch (e) {
-              console.error("[RT] addIceCandidate failed:", e);
+              console.error("[RT] Error adding remote ICE candidate:", e);
             }
           }
         }
       )
-      .subscribe((status) => {
-        console.log("[RT] Channel status:", status);
-      });
+      .subscribe((status) => console.log("[RT] Channel status:", status));
 
-    return () => {
-      console.log("[RT] Unsubscribing realtime channel");
-      supabase.removeChannel(channel);
-    };
+    return () => supabase.removeChannel(channel);
   }, [callId]);
 
   // ---------- Camera ----------
   const startCamera = async () => {
     try {
       console.log("[CAM] Requesting media");
-      const mediaStream = await navigator.mediaDevices.getUserMedia({
-        video: true,
-        audio: true,
-      });
-
-      mediaStream.getTracks().forEach((t) => {
-        pc.current.addTrack(t, mediaStream);
-        console.log("[CAM] Added local track:", t.kind);
-      });
-
-      if (videoRef.current) {
-        videoRef.current.srcObject = mediaStream;
-      }
+      const mediaStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+      mediaStream.getTracks().forEach((track) => pc.current.addTrack(track, mediaStream));
+      videoRef.current.srcObject = mediaStream;
       setStream(mediaStream);
       setIsCameraOn(true);
       console.log("[CAM] Local preview set");
     } catch (err) {
       console.error("[CAM] getUserMedia error:", err);
-      alert("Unable to access camera/mic. Check permissions.");
+      alert("Unable to access camera/mic.");
     }
   };
 
   const stopCamera = () => {
     if (stream) {
-      console.log("[CAM] Stopping local tracks");
       stream.getTracks().forEach((t) => t.stop());
       setStream(null);
       setIsCameraOn(false);
     }
   };
 
-  // ---------- Caller: create call ----------
+  // ---------- Caller ----------
   const createCall = async () => {
-    try {
-      if (!isCameraOn) {
-        alert("Start your camera first.");
-        return;
-      }
-      roleRef.current = "caller";
+    if (!isCameraOn) return alert("Start your camera first.");
+    roleRef.current = "caller";
 
-      console.log("[CALLER] Creating offer…");
-      const offer = await pc.current.createOffer(); // unified-plan; no need for offerToReceive*
-      await pc.current.setLocalDescription(offer);
-      console.log("[CALLER] Local description set (offer)");
+    const offer = await pc.current.createOffer({ offerToReceiveVideo: true, offerToReceiveAudio: true });
+    await pc.current.setLocalDescription(offer);
 
-      const { data, error } = await supabase
-        .from("calls")
-        .insert([{ offer: offer.sdp, answer: null, caller_ice: [], callee_ice: [] }])
-        .select("*")
-        .single();
+    const { data } = await supabase
+      .from("calls")
+      .insert([{ offer: offer.sdp, answer: null, caller_ice: [], callee_ice: [] }])
+      .select("*")
+      .single();
 
-      if (error) {
-        console.error("[CALLER] Create call row failed:", error);
-        return;
-      }
+    setCallId(data.id);
+    console.log("[CALLER] Call created with ID:", data.id);
 
-      setCallId(data.id);
-      console.log("[CALLER] Call created with ID:", data.id);
-    } catch (e) {
-      console.error("[CALLER] createCall failed:", e);
-    }
+    // Flush any buffered candidates
+    pendingLocalCandidates.current.forEach(async (cand) => {
+      const { data: iceData } = await supabase.from("calls").select("caller_ice").eq("id", data.id).single();
+      const current = Array.isArray(iceData?.caller_ice) ? iceData.caller_ice : [];
+      await supabase.from("calls").update({ caller_ice: [...current, cand] }).eq("id", data.id);
+    });
+    pendingLocalCandidates.current = [];
   };
 
-  // ---------- Callee: join call ----------
+  // ---------- Callee ----------
   const joinCall = async () => {
-    try {
-      console.log("[CALLEE] Join call started");
-      if (!joinCallId) {
-        alert("Please enter a call ID");
-        return;
-      }
-      if (!isCameraOn) {
-        alert("Start your camera first.");
-        return;
-      }
+    if (!isCameraOn) return alert("Start your camera first.");
+    if (!joinCallId) return alert("Enter call ID");
+    roleRef.current = "callee";
 
-      roleRef.current = "callee";
-      console.log("[CALLEE] Fetching call:", joinCallId);
+    const { data: callData } = await supabase.from("calls").select("*").eq("id", joinCallId).single();
+    setCallId(joinCallId);
 
-      const { data: callData, error } = await supabase
-        .from("calls")
-        .select("id, offer, caller_ice, callee_ice, answer")
-        .eq("id", joinCallId)
-        .single();
+    // Set remote offer
+    await pc.current.setRemoteDescription({ type: "offer", sdp: callData.offer });
 
-      if (error || !callData) {
-        console.error("[CALLEE] Call not found:", error);
-        alert("Call ID not found");
-        return;
-      }
+    // Create & set answer
+    const answer = await pc.current.createAnswer();
+    await pc.current.setLocalDescription(answer);
 
-      console.log("[CALLEE] Call data:", callData);
-      setCallId(joinCallId);
+    await supabase.from("calls").update({ answer: answer.sdp }).eq("id", joinCallId);
 
-      // Apply remote offer
-      await pc.current.setRemoteDescription(
-        new RTCSessionDescription({ type: "offer", sdp: callData.offer })
-      );
-      console.log("[CALLEE] Remote description set (offer)");
-
-      // Create & set local answer
-      const answer = await pc.current.createAnswer();
-      await pc.current.setLocalDescription(answer);
-      console.log("[CALLEE] Local description set (answer)");
-
-      // Persist answer
-      const { error: updateError } = await supabase
-        .from("calls")
-        .update({ answer: answer.sdp })
-        .eq("id", joinCallId);
-
-      if (updateError) {
-        console.error("[CALLEE] Saving answer failed:", updateError);
-      } else {
-        console.log("[CALLEE] Answer saved to DB");
-      }
-    } catch (e) {
-      console.error("[CALLEE] joinCall failed:", e);
-    }
+    // Flush buffered candidates
+    pendingLocalCandidates.current.forEach(async (cand) => {
+      const { data: iceData } = await supabase.from("calls").select("callee_ice").eq("id", joinCallId).single();
+      const current = Array.isArray(iceData?.callee_ice) ? iceData.callee_ice : [];
+      await supabase.from("calls").update({ callee_ice: [...current, cand] }).eq("id", joinCallId);
+    });
+    pendingLocalCandidates.current = [];
   };
 
   return (
     <div className="camera-container">
       <h2>Video Call Camera Preview</h2>
-
       <video ref={videoRef} autoPlay playsInline muted className="camera-preview" />
       <video ref={remoteVideoRef} autoPlay playsInline className="camera-preview" />
 
@@ -329,12 +204,7 @@ const CameraComponent = () => {
 
       {!callId && (
         <div className="join-call">
-          <input
-            type="text"
-            placeholder="Enter call ID"
-            value={joinCallId}
-            onChange={(e) => setJoinCallId(e.target.value)}
-          />
+          <input type="text" placeholder="Enter call ID" value={joinCallId} onChange={(e) => setJoinCallId(e.target.value)} />
           <button onClick={joinCall}>Join Call</button>
         </div>
       )}
