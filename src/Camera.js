@@ -7,6 +7,7 @@ const CameraComponent = () => {
   const remoteVideoRef = useRef(null);     // Remote video element
   const pc = useRef(null);                 // RTCPeerConnection
   const addedRemoteCandidates = useRef(new Set()); // Dedup remote ICE
+  const pendingCandidates = useRef([]);    // 🔥 Buffer before callId is ready
 
   const [callId, setCallId] = useState(null);      // Current call id
   const [joinCallId, setJoinCallId] = useState(""); // To join an existing call
@@ -26,7 +27,6 @@ const CameraComponent = () => {
       }
     ]
   };
-
 
   // ---------- PeerConnection setup ----------
   useEffect(() => {
@@ -53,41 +53,14 @@ const CameraComponent = () => {
         console.log("[ICE] Gathering complete (null candidate)");
         return;
       }
+
       if (!callId) {
-        console.log("[ICE] Candidate ready but no callId yet — skipping for now");
+        console.log("[ICE] Candidate ready but no callId yet — buffering");
+        pendingCandidates.current.push(event.candidate);
         return;
       }
 
-      const iceKey = isCaller ? "caller_ice" : "callee_ice";
-      console.log(`[ICE] New local candidate (${iceKey}):`, event.candidate);
-
-      // Fetch current array to append to
-      const { data, error } = await supabase
-        .from("calls")
-        .select(iceKey)
-        .eq("id", callId)
-        .single();
-
-      if (error) {
-        console.error("[ICE] Error fetching current ICE array:", error);
-        return;
-      }
-
-      const current = Array.isArray(data?.[iceKey]) ? data[iceKey] : [];
-      // Store ICE candidate as plain object (JSON) — PostgREST friendly
-      const newCand = event.candidate.toJSON();
-      const updated = [...current, newCand];
-
-      const { error: updateError } = await supabase
-        .from("calls")
-        .update({ [iceKey]: updated })
-        .eq("id", callId);
-
-      if (updateError) {
-        console.error("[ICE] Error updating ICE array:", updateError);
-      } else {
-        console.log(`[ICE] Stored ${iceKey} candidate. Total now: ${updated.length}`);
-      }
+      await saveIceCandidate(event.candidate);
     };
 
     return () => {
@@ -97,8 +70,48 @@ const CameraComponent = () => {
         pc.current = null;
       }
     };
-    // Recreate PC if role changes (affects which ICE array we write to)
   }, [isCaller]);
+
+  // ---------- Helper: Save ICE to Supabase ----------
+  const saveIceCandidate = async (candidate) => {
+    const iceKey = isCaller ? "caller_ice" : "callee_ice";
+    console.log(`[ICE] Saving ${iceKey} candidate:`, candidate);
+
+    const { data, error } = await supabase
+      .from("calls")
+      .select(iceKey)
+      .eq("id", callId)
+      .single();
+
+    if (error) {
+      console.error("[ICE] Error fetching current ICE array:", error);
+      return;
+    }
+
+    const current = Array.isArray(data?.[iceKey]) ? data[iceKey] : [];
+    const newCand = candidate.toJSON();
+    const updated = [...current, newCand];
+
+    const { error: updateError } = await supabase
+      .from("calls")
+      .update({ [iceKey]: updated })
+      .eq("id", callId);
+
+    if (updateError) {
+      console.error("[ICE] Error updating ICE array:", updateError);
+    } else {
+      console.log(`[ICE] Stored ${iceKey} candidate. Total now: ${updated.length}`);
+    }
+  };
+
+  // ---------- Flush buffered candidates once callId is set ----------
+  useEffect(() => {
+    if (callId && pendingCandidates.current.length > 0) {
+      console.log(`[ICE] Flushing ${pendingCandidates.current.length} buffered candidates`);
+      pendingCandidates.current.forEach((c) => saveIceCandidate(c));
+      pendingCandidates.current = [];
+    }
+  }, [callId]);
 
   // ---------- Supabase realtime subscription ----------
   useEffect(() => {
@@ -112,6 +125,7 @@ const CameraComponent = () => {
         { event: "UPDATE", schema: "public", table: "calls", filter: `id=eq.${callId}` },
         async (payload) => {
           const callData = payload.new;
+
           // Caller receives Answer
           if (isCaller && callData.answer && !pc.current.remoteDescription) {
             console.log("[RT] Answer received. Setting remote description.");
@@ -154,10 +168,9 @@ const CameraComponent = () => {
       console.log("[CAM] Requesting media");
       const mediaStream = await navigator.mediaDevices.getUserMedia({
         video: true,
-        audio: true, // include audio for real calls
+        audio: true,
       });
 
-      
       mediaStream.getTracks().forEach((track) => {
         pc.current.addTrack(track, mediaStream);
         console.log("[CAM] Added local track:", track.kind);
@@ -194,10 +207,7 @@ const CameraComponent = () => {
       setIsCaller(true);
 
       console.log("[CALLER] Creating offer…");
-      const offer = await pc.current.createOffer({
-        offerToReceiveAudio: true,
-        offerToReceiveVideo: true,
-      });
+      const offer = await pc.current.createOffer();
       await pc.current.setLocalDescription(offer);
       console.log("[CALLER] Local description set (offer).");
 
