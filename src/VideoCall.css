@@ -1,0 +1,24 @@
+#jaas-container {
+  /* This ensures the container takes up the full browser window */
+  width: 100vw;
+  height: 100vh;
+  /* Removes any default margin or padding */
+  margin: 0;
+  padding: 0;
+  /* Prevents scrolling */
+  overflow: hidden;
+}
+/* This class will ensure the container takes up the full browser window */
+.video-wrapper {
+  height: 100%;
+  width: 100%;
+  overflow: hidden;
+  position: relative;
+}
+
+/* This targets the iframe that Jitsi embeds and forces it to fit its parent container */
+.video-wrapper iframe {
+  height: 100%;
+  width: 100%;
+  display: block;
+}
